@@ -1,0 +1,534 @@
+---
+title: "Wildfires Project"
+author: "Bryan Fandawa"
+format:
+  html: default
+  pdf: default
+editor: visual
+echo: true
+---
+
+## Import Packages
+
+```{r}
+#| warning: false
+#| message: false
+
+library(tidyverse)
+library(ggthemes)
+library(tibble)
+library(ggplot2)
+library(ggpubr)
+library(ggrepel)
+library(patchwork)
+library(readr)
+```
+
+# Wildfire Project
+
+## Importing the data
+
+1\) Reading the RDS file and importing it as fires. This dataset contains 1,880,465 rows.
+
+```{r}
+fires <- readRDS("/Users/bryancf/Library/CloudStorage/OneDrive-DordtUniversity/AData Science/Dataset/Fires Dataset/fires_original.rds")
+```
+
+```{r}
+nrow(fires)
+```
+
+2\) Renaming all the columns to lower case and so its easier to read.
+
+```{r}
+library(janitor)
+fires <- fires |>
+  janitor::clean_names()
+
+fires <- fires |>
+  rename(size = fire_size,
+         year = fire_year,
+         cause = stat_cause_descr,
+         reporting_agency = nwcg_reporting_agency)
+fires
+```
+
+3\) Converting the datetime type to date type in two columns because we only need the date for this analysis.
+
+```{r}
+fires <- fires |>
+  mutate(discovery_date = as.Date(discovery_date),
+         contain_date = as.Date(contain_date))
+```
+
+4\) Dropping the duplicates.
+
+```{r}
+fires1 <- fires |>
+  distinct()
+nrow(fires) - nrow(fires1) #1648 rows of duplicates
+```
+
+5\) This dataset contains a lot of very small fires, I am going to shrink it down to make it more manageable. Fires smaller than 100 acres will be removed.
+
+```{r}
+sum(fires1$size < 100) #1,824,724 small fires
+sum(fires1$size >= 100) #54,093 big fires
+fires2 <- fires1 |>
+  filter(size >= 100)
+```
+
+6\) Saving the clean data in the variable fires2 so if I make a mistake, I can restart using this variable.
+
+```{r}
+write_rds(fires2, "clean data.rds")
+```
+
+## Preparing the data
+
+Looking into dates specifically will be hard to analyze, so I will only extract month from the column `discovery_date`. I won't be focusing on contain date for this analysis so I will drop that column. The third pipe uses the `str_to_title()`function to make each word starts with capital letters so that its a better looking format. Lastly I reordered the columns in a more useful order and arranged it by descending size.
+
+```{r}
+fires3 <- fires2 |>
+  mutate(
+    month = format(discovery_date, "%m"),
+    fire_name = str_to_title(fire_name)) |>
+  select(-contain_date) |>
+  select(fire_name, state, size, year, month, 
+         discovery_date, latitude, longitude, 
+         cause, reporting_agency) |>
+  arrange(desc(size))
+```
+
+Displays the first couple rows of `fires2`
+
+```{r}
+head(fires3)
+```
+
+## Analyzing the data
+
+This data is no longer the full data because it has been filtered to fires of 100 acres or more, so its technically a subset of total fires, but we will assume that this is all the fires.
+
+1\) Below is the plot of the largest fire per year in California. According to the linear model, there is an increase of the largest fire per year in California each year.
+
+```{r}
+fires3 |>
+  filter(state == "CA") |>
+  distinct(year, .keep_all = TRUE) |>
+  group_by(year) |>
+  summarize(
+    max_size = max(size)
+  ) |>
+  ungroup() |>
+  arrange(desc(year)) |>
+  ggplot(aes(x = year, y = max_size)) + 
+  geom_point() + 
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(
+    title = "Largest Fire per Year in California",
+    y = "Size of Fire",
+    x = "Year"
+  )
+```
+
+2\) I plotted a line chard of mean and median fire size in California across the years. The massive gaps between the mean and median shows that there are extreme outliers. The mean is being pulled upward by a relatively small number of very large fires, while the median represents what a "typical" fire size actually is.
+
+```{r}
+
+fires5 <- fires3 |>
+  filter(state == "CA") |>
+  group_by(year) |>
+  summarize(
+    mean_size = mean(size, na.rm = TRUE),
+    median_size = median(size, na.rm = TRUE)
+  ) |>
+  ungroup() |>
+  arrange(desc(year))
+
+longer_fires5 <- fires5 |>
+  pivot_longer(
+  cols = 2:3,
+  names_to = "statistics",
+  values_to = "size"
+)
+ggplot(longer_fires5, aes(x = year, y = size, color = statistics)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  labs(
+    title = "Means and Median for Fire Size in California per Year",
+    y = "Size of Fire",
+    x = "Year",
+    color = "Statistics"
+  ) +
+ scale_color_manual(
+    values = c("mean_size" = "#f3732f", "median_size" = "#592ff3"),
+    labels = c("mean_size" = "Mean of Size", "median_size" = "Median of Size")
+  )
+```
+
+3\) From the plot below, we can see that fire season typically occurs during June, July, August, and September, when the hottest temperatures kick in.
+
+```{r}
+fires3
+fires3 |>
+  filter(state == "CA") |>
+  mutate(
+    month = str_remove(month, "^0")
+  ) |>
+  mutate(
+    month = factor(month, levels = as.character(c(1:12)))
+  ) |>
+  group_by(month) |>
+  summarize(
+    num_fires = n()
+  ) |>
+  ggplot(aes(x = month, y = num_fires, fill = month)) + 
+  geom_bar(stat = "identity") + 
+  scale_fill_manual(
+    values = c(
+      "6" = "orange", "7" = "orange", "8" = "orange", "9" = "orange",
+      "1" = "blue", "2" = "blue", "3" = "blue", "4" = "blue",
+      "5" = "blue", "10" = "blue", "11" = "blue", "12" = "blue"
+    )
+  ) + labs(
+    title = "Number of Fires in Each Month in California",
+    subtitle = "Fire Season are in Orange",
+    x = "Month",
+    y = "Number of Fire",
+    fill = "Month"
+  )
+```
+
+4\) The largest fires occurred during the 6th month of the year which is June because of the outliers and the upper range of the boxplot. The range of fire sizes are more spread out in June. But according to the bar graph of above, there are more numbers of fires happening in July. But this boxplot shows that the month July doesn't have that much range in size, but they might have more numbers of fire.
+
+```{r}
+fires3 |>
+  mutate(
+    month = str_remove(month, "^0")
+  ) |>
+  mutate(
+    month = factor(month, levels = as.character(c(1:12)))
+  ) |>
+  ggplot(aes(x = month, y = size)) + 
+  geom_boxplot() +
+  labs(
+    title = "Fire Sizes by Month",
+    x = "Month",
+    y = "Size of Fires (Acres)"
+  ) 
+```
+
+5\) Below is the plot of total acres burned among the states in the top 10 for acres burned.
+
+```{r}
+second_plot <- fires3 |>
+  group_by(state) |>
+  summarize(
+    total_burned = sum(size)
+  ) |>
+  arrange(desc(total_burned)) |>
+  ungroup() |>
+  head(n = 10) |>
+  ggplot(aes(x = fct_reorder(state, desc(total_burned)), y = total_burned)) + 
+  geom_bar(stat = "identity", aes(fill = state)) +
+  labs(
+    title = "Top 10 States With Most Burned Lands",
+    x = "State",
+    y = "Total Acres Burned",
+    fill = "State"
+  )
+second_plot
+```
+
+6\) I look up the total acreage of each state and compared the total acres burned to the total of the land. From the left plot we can see that Idaho burned around 26% of its land which is striking because its about a quarter of its land. Alaska dominates for total acres burned with approximately 30 million acres. This is significantly more than Idaho or California. Alaska's enormous land area means it can experience massive fire acreage while still maintaining a relatively low percentage of total state area burned.
+
+```{r}
+library(patchwork)
+state_acreage <- c(
+  AK = 365481600,
+  CA = 104765440,
+  ID = 52868240,
+  MT = 93952800,
+  NM = 77179000,
+  NV = 70844000,
+  OR = 62431200,
+  TX = 171902000,
+  WA = 42672000,
+  AZ = 72832000
+)
+state1 <- fires3 |>
+  group_by(state) |>
+  summarize(
+    total_burned = sum(size)
+  ) |>
+  arrange(desc(total_burned)) |>
+  ungroup() |>
+  head(n = 10) |>
+  mutate(
+    total_acres = state_acreage[state]
+  )
+
+state2 <- state1 |>
+  mutate(
+    percentage_of_burned = (total_burned / total_acres) * 100) |>
+  arrange(desc(percentage_of_burned))
+
+first_plot <- ggplot(state2, 
+                     aes(x = fct_reorder(state, desc(percentage_of_burned)), 
+                         y = percentage_of_burned)) + 
+  geom_bar(stat = "identity", aes(fill = state)) +
+  labs(
+    title = "Percentage of State Acreage Burned",
+    x = "State",
+    y = "Percentage of Acres Burned",
+    fill = "State"
+  ) +
+  theme(
+    plot.title = element_text(size = 10)
+  )
+second_plot2 <- second_plot +
+  theme(
+    plot.title = element_text(size = 10)
+  )
+first_plot + second_plot2
+```
+
+7\) Below is a comparison plot of acres burned over time for the top 4 states which are Alaska, California, Idaho, and Nevada.
+
+```{r}
+n4_states <- state1 |>
+  head(n = 4) |>
+  pull(state)
+
+plotted_by_time <- fires3 |>
+  filter(state %in% n4_states) |>
+  group_by(state, year) |>
+  summarize(
+    sumofburned = sum(size)
+  ) |>
+  ungroup()
+ggplot(plotted_by_time, aes(x = year, y = sumofburned)) +
+  geom_line(size = 1, aes(color = state)) +
+  labs(
+    title = "Acres Burned Over Time for Top 4 States",
+    x = "Year",
+    y = "Acres Burned",
+    color = "State"
+  ) +
+  theme(
+    plot.title = element_text(size = 14),
+    strip.text = element_text(face = "bold")
+  ) +
+  facet_wrap(~state, ncol = 1)
+```
+
+8\) Below is a map of California showing the locations of the top 20 largest fires. Each dot represents a fire, with the dot's size proportional to the fire's acreage. The year label on each dot indicates when the fire occurred.
+
+```{r}
+
+map <- map_data("state", "california")
+ggplot() +
+  geom_polygon(data = map, mapping = aes(x = long, y = lat), 
+               color = "black", fill = "white") +
+  geom_point(data = {fires3 |>
+      filter(state == "CA") |>
+      arrange(desc(size)) |>
+      head(n = 20)},
+      aes(x = longitude, y = latitude, size = size),
+      color = "red",
+      alpha = 0.6) +
+  geom_text(
+    data = {fires3 |> 
+              filter(state == "CA") |> 
+              arrange(desc(size)) |> 
+              slice_head(n = 20)},
+    aes(x = longitude, y = latitude, label = year),
+    size = 2.5,
+    hjust = 0.5,
+    vjust = -1
+  ) +
+  labs(
+    title = "Top 20 Largest Fires in California",
+    x = "Longitude",
+    y = "Latitude",
+    size = "Fire Size"
+  )
+  coord_quickmap()
+```
+
+9\) This map displays all fires in the contiguous United States with acreage exceeding 100,000 acres. Each dot represents a fire, sized proportionally to its acreage. Alaska and Hawaii are excluded from this visualization as they are not included in the map data.
+
+```{r}
+
+map2 <- map_data("state")
+ggplot() +
+  geom_polygon(data = map2, 
+               mapping = aes(x = long, y = lat, group = group),
+               fill = "white", color = "black")+
+  geom_point(data = {fires3 |>
+      filter(size > 100000) |>
+      filter(longitude > -140) |>
+      filter(latitude > 20)}, 
+      aes(x = longitude, y = latitude, size = size),
+      color = "orange",
+      alpha = 0.6) +
+  labs(
+    title = "Fire in the US larger Than 100,000 Acres",
+    subtitle = "Alaska and Hawai not included",
+    x = "Longitude",
+    y = "Latitude",
+    size = "Size"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold")
+  )
+  coord_quickmap()
+```
+
+10\) This map shows the geographic distribution of land management agencies responsible for fires exceeding 1,000 acres. The BLM agency controls most of the interior Western states, including Nevada, Utah, and Idaho. The Forest Service dominates the Pacific Northwest, particularly Oregon and Washington. Tribal lands are scattered throughout the Eastern, Southeastern, Southern, and Midwestern regions.
+
+```{r}
+
+ggplot() +
+  geom_polygon(data = map2, 
+               mapping = aes(x = long, y = lat, group = group),
+               fill = "white", color = "black")+
+  geom_point(data = {fires3 |>
+      filter(size > 1000) |>
+      filter(longitude > -140) |>
+      filter(latitude > 20)}, 
+  aes(x = longitude, y = latitude, color = reporting_agency),
+  size = 2,
+  alpha = 0.6) +
+  labs(
+    title = "Fire in the US larger Than 1,000 Acres",
+    x = "Longitude",
+    y = "Latitude",
+    color = "Agency"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold")
+  )
+```
+
+11\) This map shows the geographic distribution of the causes of fire. I made two plots because lightning dominates the map, so I made another one that doesn't include lightning. Interesting patterns I can see from the map is that the most fires in the Western parts appear to be caused by lightning. Western parts have a lot of forest areas where lightning is a common natural natural fire starter. Eastern and Southeast part is mostly caused by Arson as states like Arizona, New Mexico, and Texas are the states that are considered most dangerous. The Midwest area has low numbers of forest and is dominated by agriculture area therefore reduces the likelihood of large-scale fire. Firework causes fire on certain populated area, could be caused during a big event (4th of July, etc).
+
+```{r}
+ggplot() +
+  geom_polygon(data = map2, 
+               mapping = aes(x = long, y = lat, group = group),
+               fill = "white", color = "black")+
+  geom_point(data = {fires3 |>
+      filter(size > 1000) |>
+      filter(longitude > -140) |>
+      filter(latitude > 20)}, 
+  aes(x = longitude, y = latitude, color = cause),
+  size = 2,
+  alpha = 0.6) +
+  labs(
+    title = "Fire in the US larger Than 1,000 Acres",
+    x = "Longitude",
+    y = "Latitude",
+    color = "Agency"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold")
+  )
+
+ggplot() +
+  geom_polygon(data = map2, 
+               mapping = aes(x = long, y = lat, group = group),
+               fill = "white", color = "black")+
+  geom_point(data = {fires3 |>
+      filter(size > 1000) |>
+      filter(longitude > -140) |>
+      filter(latitude > 20) |>
+      filter(!cause == "Lightning")}, 
+  aes(x = longitude, y = latitude, color = cause),
+  size = 2,
+  alpha = 0.999) +
+  labs(
+    title = "Fire in the US larger Than 1,000 Acres",
+    x = "Longitude",
+    y = "Latitude",
+    color = "Agency"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold")
+  )
+```
+
+12\) Despite looking it from a map perspective, I want to see whether there are seasonal patterns. Below is a bar plot of number of fires per month by cause. From the plot I can conclude that June, July, and August tend to show the highest number of fires because its Summer. The weather is dry, increase outdoor activities, and thunderstorms. When it starts to cool, during fall season, the number of fire dropped drastically. December, January and February shows less number of fires because it is during the winter season.
+
+```{r}
+fires3 |>
+  mutate(
+    month = str_remove(month, "^0")
+  ) |>
+  mutate(
+    month = factor(month, levels = as.character(c(1:12)))
+  ) |>
+  ggplot(aes(x = month, fill = cause)) + 
+  geom_bar(position = "stack") +
+  labs(
+    title = "Number of Fires per Month by Cause",
+    x = "Month",
+    y = "Number of Fires",
+    fill = "Cause"
+  )
+```
+
+13\) I want to know which states experienced the highest number of fires caused by lightning and how does it compare to human-caused fires.
+
+As we can see from the graph, states like Idaho, Oregon, and Montana shows dominance on lightning cause because they have large forested and mountain regions. Alaska has significantly more fires caused by lightning because Alaska is filled with wilderness and forested areas. California shows a balance number between human and lightning cause because it has dense population, but is also filled with forested and mountain regions. Florida and Texas shows dominance on human cause because they don't have a lot of forest, and they have dense population. Western state is dominance of lightning because it is filled with forested and mountain regions, while eastern and southeast region is dominance of human caused because it is dense in population.
+
+```{r}
+fires3 |>
+  mutate(state = as.factor(state)) |>
+  mutate(cause = as.factor(cause)) |>
+  filter(cause %in% c("Lightning", "Campfire", "Arson", 
+                      "Equipment Use", "Debris Burning")) |>
+  mutate(
+    human_lightning = fct_collapse(cause,
+                                   "human" = c("Campfire", "Arson",
+                                               "Equipment Use", "Debris Burning"),
+                                   "lightning" = "Lightning")) |>
+  group_by(state, human_lightning) |>
+  summarize(
+    total_fires = n(),
+    .groups = "drop"
+  ) |>
+  filter(total_fires > 800) |>
+  ggplot(aes(x = state, y = total_fires, fill = human_lightning)) + 
+  geom_bar(stat = "identity") +
+  labs(
+    title = "Comparison of Lightning Vs Human-Caused Fires by State",
+    x = "State",
+    y = "Number of Fires",
+    fill = "Cause of Fire"
+  ) +
+  facet_wrap(~human_lightning)
+
+```
+
+14\) I want to see whether there is a relationship between size of fire and causes. From the analysis below, the low p-value indicates that the cause of fire has a significant impact on fire size. The F-statistic of 173.2 indicates that the variance explained by cause is significantly larger than random noise. I logged the data to reduce skewness. Lightning has the highest median and shows the most impact cause and has the widest variability in size. The rest shows lower median, as they don't impact as much as lightning. From this data we can see that there are differences in impact
+
+```{r}
+filtered_fires <- fires3 |>
+  mutate(state = as.factor(state)) |>
+  mutate(cause = as.factor(cause)) |>
+  filter(cause %in% c("Lightning", "Campfire", "Arson", 
+                      "Equipment Use", "Debris Burning"))
+anova_model <- aov(size ~ cause, data = filtered_fires)
+summary(anova_model)
+
+ggplot(filtered_fires, aes(x = cause, y = size)) +
+  geom_boxplot() +
+  scale_y_log10() +
+  labs(
+    title = "Fire Size by Cause (Humans or Lightning)",
+    x = "Cause of Fire",
+    y = "Fire Size (log 10)"
+  )
+```
